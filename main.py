@@ -1,16 +1,19 @@
 #!python3.9
 # -*- encoding: utf-8 -*-
+#coding:utf-8
 
 import requests, re, yaml, time, base64
 from re import Pattern
 from typing import Any, Dict, List
-
+from lxml import etree
+from itertools  import chain
 import urllib3
+import os 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 rss_url:str = 'https://www.cfmem.com/feeds/posts/default?alt=rss'
-clash_reg:Pattern = re.compile(r'clash订阅链接：(?:&lt;/span&gt;&lt;span style=&quot;background-color: white; color: #111111; font-size: 15px;&quot;&gt;)?(https?.+?)(?:&lt;|<)/span(?:&gt;|>)')
-v2ray_reg:Pattern = re.compile(r'v2ray订阅链接：(?:&lt;/span &gt;&lt;/span &gt;&lt;/span &gt;&lt;span style=&quot;color: #111111;&quot;&gt;&lt;span style=&quot;font-size: 15px;&quot;&gt;)?(https?.+?)(?:&lt;|<)/span(?:&gt;|>)')
+clash_reg:Pattern = re.compile(r'clash.*(https?://\S+)')
+v2ray_reg:Pattern = re.compile(r'V2Ray.*(https?://\S+)')
 
 clash_output_file:str = './dist/clash.config.yaml'
 clash_output_tpl:str = './clash.config.template.yaml'
@@ -18,19 +21,20 @@ v2ray_output_file:str = './dist/v2ray.config.txt'
     
 clash_extra:List[str] = []
 
-blacklist:List[str] = list(map(lambda l:l.replace('\r', '').replace('\n', '').split(':'), open('blacklists.txt').readlines()))
+blacklist:List[str] = list(map(lambda l:l.replace('\r', '').replace('\n', '').split(':'), open('blacklists.txt',encoding='utf-8').readlines()))
 
 def clash_urls(html:str) -> List[str]:
     '''
     Fetch URLs For Clash
     '''
-    return clash_reg.findall(html) + clash_extra
+    
+    return list(chain(*filter(lambda y: len(y)>0,map(lambda x: clash_reg.findall(x.text),html)))) + clash_extra
 
 def v2ray_urls(html:str) -> List[str]:
     '''
     Fetch URLs For V2Ray
     '''
-    return v2ray_reg.findall(html)
+    return list(chain(*filter(lambda y: len(y)>0,map(lambda x: v2ray_reg.findall(x.text),html)))) + clash_extra
 
 def fetch_html(url:str) -> str:
     '''
@@ -50,7 +54,7 @@ def merge_clash(configs:List[str]) -> str:
     '''
     Merge Multiple Clash Configurations
     '''
-    config_template:Dict[str, Any] = yaml.safe_load(open(clash_output_tpl).read())
+    config_template:Dict[str, Any] = yaml.safe_load(open(clash_output_tpl,encoding='utf-8').read())
     proxies:List[Dict[str, Any]] = []
     for i in range(len(configs)):
         tmp_config:Dict[str, Any] = yaml.safe_load(configs[i])
@@ -74,23 +78,22 @@ def merge_v2ray(configs:List[str]) -> str:
     '''
     Merge Multiple V2Ray Configurations
     '''
-    linesep:str = '\r\n'
-    decoded_configs:List[str] = list(map(lambda c: base64.b64decode(c).decode('utf-8'), configs))
-    if len(decoded_configs) > 0:
-        if linesep not in decoded_configs[0]:
-            linesep = '\n'
-    merged_configs:List[str] = []
-    for dc in decoded_configs:
-        merged_configs.extend(dc.split(linesep))
-    return base64.b64encode(linesep.join(merged_configs).encode('utf-8')).decode('utf-8')
+    return os.linesep.join(configs)
 
 def main():
-    rss_text:str = fetch_html(rss_url)
-    if rss_text is None or len(rss_text) <= 0: 
+    rss_html:str = fetch_html(rss_url)
+    # rss_html:str = open(file='./rss.html',mode='r',encoding='utf-8').read()
+    if rss_html is None or len(rss_html) <= 0: 
         print('[-] Failed To Fetch Content Of RSS')
         return
-    clash_url_list:List[str] = clash_urls(rss_text)
-    v2ray_url_list:List[str] = v2ray_urls(rss_text)
+    rss_html = rss_html.replace("&amp;","&")
+    rss_html = rss_html.replace("&lt;","<")
+    rss_html = rss_html.replace("&gt;",">")
+    rss_html = rss_html.replace("&nbsp;"," ")
+    rss_html = rss_html.replace("&quot;",'"')
+    span_list = etree.HTML(rss_html.encode('utf-8')).cssselect("h2 + div > div > span")
+    clash_url_list:List[str] = clash_urls(span_list)
+    v2ray_url_list:List[str] = v2ray_urls(span_list)
     print(f'[+] Got {len(clash_url_list)} Clash URLs, {len(v2ray_url_list)} V2Ray URLs')
 
     clash_configs:List[str] = [] 
@@ -101,7 +104,7 @@ def main():
             print(f'[+] Configuration {u} Downloaded')
         else: 
             print(f'[-] Failed To Download Clash Configuration {u}')
-        time.sleep(0.5)
+        #time.sleep(0.1)
     v2ray_configs:List[str] = []
     for u in v2ray_url_list:
         html:str = fetch_html(u)
@@ -110,13 +113,13 @@ def main():
             print(f'[+] Configuration {u} Downloaded')
         else: 
             print(f'[-] Failed To Download V2Ray Configuration {u}')
-        time.sleep(0.5)
+        #time.sleep(0.1)
 
     clash_merged:str = merge_clash(clash_configs)
-    v2ray_merged:str = merge_v2ray(v2ray_configs)
+    with open(clash_output_file, mode='w',encoding='utf-8') as f: f.write(clash_merged)
 
-    with open(clash_output_file, 'w') as f: f.write(clash_merged)
-    with open(v2ray_output_file, 'w') as f: f.write(v2ray_merged)
+    v2ray_merged:str = merge_v2ray(v2ray_configs)
+    with open(v2ray_output_file, mode='w',encoding='utf-8') as f: f.write(v2ray_merged)
 
 if __name__ == '__main__':
     main()
